@@ -1,0 +1,19 @@
+.idea/
+build/
+/target/
+bin/
+.settings/
+.classpath
+.project
+*.class
+*.patch
+*.iml
+.factorypath
+*.log
+.gradle/
+out/
+/.env
+
+### OS ###
+.DS_Store
+.DS_Store?
