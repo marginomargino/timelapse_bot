@@ -14,11 +14,19 @@ import com.github.kotlintelegrambot.logging.LogLevel
 import core.Static.clock
 import core.Static.env
 import core.Static.timeZone
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.minus
 import kotlinx.datetime.todayIn
+import java.io.BufferedReader
 import java.io.File
+import java.io.InputStreamReader
+import java.nio.file.Files
 
 
 object Bot {
@@ -27,6 +35,7 @@ object Bot {
 
     private val bot: Bot = bot {
         token = env["BOT_TOKEN"]
+        timeout = 180
         logLevel = LogLevel.Error
         dispatch {
             command("start") {
@@ -35,24 +44,84 @@ object Bot {
                 bot.sendMessage(chatId = chatId, text = "Please enter the password to access the bot:")
             }
             command("full") {
-                process(Task.Full)
+                processTimelapseTask(Task.Full)
             }
             command("today") {
-                process(Task.Today)
+                processTimelapseTask(Task.Today)
             }
             command("yesterday") {
-                process(Task.Yesterday)
+                processTimelapseTask(Task.Yesterday)
             }
             telegramError {
-                println(error.getErrorMessage())
+                println("Error: ${error.getType()}: ${error.getErrorMessage()}")
             }
 
             text {
                 val text = message.text
                 if (text != null && !text.startsWith("/")) {
-                    handleIncomingMessage(text, ChatId.fromId(message.chat.id), message.messageId)
+                    when {
+                        text.startsWith("$env[ADMIN_PREFIX] ") -> handleBashCommand(
+                            message = text.removePrefix("$env[ADMIN_PREFIX] ").trim(),
+                            chatId = ChatId.fromId(message.chat.id),
+                            userId = message.from?.id
+                        )
+
+                        else -> handleIncomingMessage(text, ChatId.fromId(message.chat.id), message.messageId)
+                    }
                 }
             }
+        }
+    }
+
+
+    private fun handleBashCommand(message: String, chatId: ChatId, userId: Long?) {
+        if (env["ADMIN_ID"].toLong() != userId || message.isBlank())
+            return
+
+        try {
+            when {
+                message.startsWith("get ") -> {
+                    val filename = message.removePrefix("get ").trim()
+                    if (filename.isNotEmpty()) {
+                        val filePath = "${env["HOME_PATH"]}/$filename"
+                        val file = File(filePath)
+                        if (file.exists()) {
+                            withTempFile(file) {
+                                bot.sendDocument(chatId = chatId, document = TelegramFile.ByFile(this))
+                            }
+                        } else {
+                            bot.sendMessage(chatId = chatId, text = "File not found: $filename")
+                        }
+                    } else {
+                        bot.sendMessage(chatId = chatId, text = "Please provide a filename.")
+                    }
+                }
+
+                else -> {
+                    val process = ProcessBuilder("/bin/bash", "-c", message).start()
+                    val reader = BufferedReader(InputStreamReader(process.inputStream))
+                    val errorReader = BufferedReader(InputStreamReader(process.errorStream))
+
+                    val output = StringBuilder()
+                    reader.forEachLine { output.append(it).append("\n") }
+
+                    val errorOutput = StringBuilder()
+                    errorReader.forEachLine { errorOutput.append(it).append("\n") }
+
+                    if (errorOutput.isNotEmpty()) {
+                        output.append("Error:\n$errorOutput")
+                    }
+
+                    process.waitFor()
+                    output.toString().trim()
+
+                    bot.sendMessage(
+                        chatId = chatId,
+                        text = output.toString().takeIf { it.isNotBlank() } ?: "<empty output>")
+                }
+            }
+        } catch (e: Exception) {
+            println("Failed to execute command: ${e.message}")
         }
     }
 
@@ -70,7 +139,7 @@ object Bot {
     }
 
 
-    private fun CommandHandlerEnvironment.process(task: Task) {
+    private fun CommandHandlerEnvironment.processTimelapseTask(task: Task) {
         val chatId = ChatId.fromId(message.chat.id)
 
         if (!userPasswordStatus.getOrDefault(chatId, false)) {
@@ -78,17 +147,19 @@ object Bot {
             return
         }
 
-        process(chatId, task)
+        processTimelapseTask(chatId, task)
     }
 
 
-    fun process(chatId: ChatId, task: Task) {
-        try {
-            bot.sendChatAction(
-                chatId = chatId,
-                action = ChatAction.UPLOAD_VIDEO
-            )
+    fun processTimelapseTask(chatId: ChatId, task: Task) {
+        val actionJob = CoroutineScope(Dispatchers.IO).launch {
+            while (isActive) {
+                bot.sendChatAction(chatId = chatId, action = ChatAction.UPLOAD_VIDEO)
+                delay(2000)
+            }
+        }
 
+        try {
             fun dateString(date: LocalDate) =
                 String.format("%04d%02d%02d", date.year, date.monthNumber, date.dayOfMonth)
 
@@ -99,20 +170,30 @@ object Bot {
                 Task.Yesterday -> "timelapse_${dateString(today.minus(1, DateTimeUnit.DAY))}.mp4"
             }
 
-            val file = File("${env["FILE_PATH"]}/$filename")
-
-            bot.sendVideo(
-                chatId = chatId,
-                video = TelegramFile.ByFile(file),
-            )
-
-        } catch (e: Throwable) {
-            e.printStackTrace()
+            withTempFile(File("${env["HOME_PATH"]}${env["RELATIVE_TIMELAPSE_PATH"]}/$filename")) {
+                bot.sendVideo(chatId = chatId, video = TelegramFile.ByFile(this))
+            }
+        } catch (e: Exception) {
+            println("Error sending file: ${e.message}")
+            bot.sendMessage(chatId = chatId, text = "There was an issue sending the video. Please try again later.")
+        } finally {
+            actionJob.cancel()
         }
     }
 
 
     fun start() {
         bot.startPolling()
+    }
+
+
+    private fun withTempFile(file: File, block: File.() -> Unit) {
+        val tempFile = Files.createTempFile(file.nameWithoutExtension, file.extension).toFile()
+        try {
+            file.copyTo(tempFile, overwrite = true)
+            block(file)
+        } finally {
+            tempFile.delete()
+        }
     }
 }
