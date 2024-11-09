@@ -11,6 +11,8 @@ import com.github.kotlintelegrambot.entities.ChatAction
 import com.github.kotlintelegrambot.entities.ChatId
 import com.github.kotlintelegrambot.entities.TelegramFile
 import com.github.kotlintelegrambot.logging.LogLevel
+import core.DB.fetchUserAuth
+import core.DB.saveUserAuth
 import core.Static.clock
 import core.Static.env
 import core.Static.timeZone
@@ -31,8 +33,6 @@ import java.nio.file.Files
 
 object Bot {
 
-    private val userPasswordStatus = mutableMapOf<ChatId, Boolean>()
-
     private val bot: Bot = bot {
         token = env["BOT_TOKEN"]
         timeout = 180
@@ -40,7 +40,6 @@ object Bot {
         dispatch {
             command("start") {
                 val chatId = ChatId.fromId(message.chat.id)
-                userPasswordStatus[chatId] = false
                 bot.sendMessage(chatId = chatId, text = "Please enter the password to access the bot:")
             }
             command("full") {
@@ -57,16 +56,17 @@ object Bot {
             }
 
             text {
+                val adminPrefix = "${env["ADMIN_PREFIX"]} "
                 val text = message.text
                 if (text != null && !text.startsWith("/")) {
                     when {
-                        text.startsWith("$env[ADMIN_PREFIX] ") -> handleBashCommand(
-                            message = text.removePrefix("$env[ADMIN_PREFIX] ").trim(),
+                        text.startsWith(adminPrefix) -> handleBashCommand(
+                            message = text.removePrefix(adminPrefix).trim(),
                             chatId = ChatId.fromId(message.chat.id),
                             userId = message.from?.id
                         )
 
-                        else -> handleIncomingMessage(text, ChatId.fromId(message.chat.id), message.messageId)
+                        else -> handleIncomingMessage(text, message.chat.id, message.messageId)
                     }
                 }
             }
@@ -126,28 +126,30 @@ object Bot {
     }
 
 
-    private fun handleIncomingMessage(message: String?, chatId: ChatId, messageId: Long) {
-        if (userPasswordStatus[chatId] != true) {
-            if (message == env["USER_PWD"]) {
-                userPasswordStatus[chatId] = true
-                bot.sendMessage(chatId = chatId, text = "Access granted. You can now use the bot.")
-            } else {
-                bot.sendMessage(chatId = chatId, text = "Incorrect password. Please try again.")
-            }
-            bot.deleteMessage(chatId, messageId)
+    private suspend fun handleIncomingMessage(message: String?, chatId: Long, messageId: Long) {
+        if (fetchUserAuth(chatId) != null)
+            return
+
+        val telegramChatId = ChatId.fromId(chatId)
+        if (message == env["USER_PWD"]) {
+            saveUserAuth(chatId)
+            bot.sendMessage(chatId = telegramChatId, text = "Access granted. You can now use the bot.")
+        } else {
+            bot.sendMessage(chatId = telegramChatId, text = "Incorrect password. Please try again.")
         }
+        bot.deleteMessage(telegramChatId, messageId)
     }
 
 
-    private fun CommandHandlerEnvironment.processTimelapseTask(task: Task) {
-        val chatId = ChatId.fromId(message.chat.id)
+    private suspend fun CommandHandlerEnvironment.processTimelapseTask(task: Task) {
+        val telegramChatId = ChatId.fromId(message.chat.id)
 
-        if (!userPasswordStatus.getOrDefault(chatId, false)) {
-            bot.sendMessage(chatId = chatId, text = "You must enter the password first.")
+        if (fetchUserAuth(message.chat.id) == null) {
+            bot.sendMessage(chatId = telegramChatId, text = "You must enter the password first.")
             return
         }
 
-        processTimelapseTask(chatId, task)
+        processTimelapseTask(telegramChatId, task)
     }
 
 

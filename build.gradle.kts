@@ -13,11 +13,15 @@ allprojects {
 
 
 dependencies {
+    implementation("ch.qos.logback:logback-classic:1.5.11")
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("io.github.cdimascio:dotenv-kotlin:6.4.1")
     implementation("io.github.kotlin-telegram-bot.kotlin-telegram-bot:telegram:6.1.0")
     implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.4.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("org.mongodb:mongodb-driver-kotlin-coroutine:5.0.1")
+    implementation("org.mongodb:bson-kotlinx:5.0.1")
 }
 
 application {
